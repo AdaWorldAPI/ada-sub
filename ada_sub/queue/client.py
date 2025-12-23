@@ -10,6 +10,8 @@ This gives us:
 """
 
 import base64
+import hashlib
+import hmac
 import json
 import time
 from typing import Any
@@ -114,17 +116,35 @@ class QStashClient:
             self._client = None
 
 
+def compute_task_hmac(task_body: dict, signing_key: str) -> str:
+    """Compute HMAC for task verification."""
+    # Serialize deterministically (sorted keys, no spaces)
+    canonical = json.dumps(task_body, sort_keys=True, separators=(",", ":"))
+    sig = hmac.new(signing_key.encode(), canonical.encode(), hashlib.sha256).digest()
+    return base64.b64encode(sig).decode()
+
+
+def verify_task_hmac(task_body: dict, signature: str, signing_key: str) -> bool:
+    """Verify task HMAC signature."""
+    expected = compute_task_hmac(task_body, signing_key)
+    return hmac.compare_digest(signature, expected)
+
+
 class RedisQueue:
     """
-    Pull-based queue using Upstash Redis.
+    Pull-based queue using Upstash Redis with priority support.
 
-    This is what the local worker actually consumes from.
-    No exposed ports, just outbound HTTPS to Redis.
+    Uses separate queues by priority: tasks:p0 (highest) through tasks:p9 (lowest).
+    Worker polls high priority first.
     """
 
-    def __init__(self, redis_url: str, redis_token: str):
+    # Priority levels (0 = highest)
+    PRIORITY_LEVELS = 10
+
+    def __init__(self, redis_url: str, redis_token: str, signing_key: str = ""):
         self.redis_url = redis_url.rstrip("/")
         self.redis_token = redis_token
+        self.signing_key = signing_key
         self._client: httpx.AsyncClient | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -138,52 +158,108 @@ class RedisQueue:
             )
         return self._client
 
-    async def push(self, queue_name: str, message: dict[str, Any]) -> bool:
-        """Push a message to the queue (LPUSH)."""
+    def _priority_queue_name(self, base_name: str, priority: int) -> str:
+        """Get queue name for a given priority level."""
+        priority = max(0, min(priority, self.PRIORITY_LEVELS - 1))
+        return f"{base_name}:p{priority}"
+
+    async def push(
+        self,
+        queue_name: str,
+        message: dict[str, Any],
+        priority: int = 5,
+        sign: bool = True,
+    ) -> bool:
+        """Push a message to the priority queue (LPUSH)."""
         client = await self._get_client()
 
+        # Add HMAC signature if signing key is set
+        if sign and self.signing_key:
+            message = message.copy()
+            message["_sig"] = compute_task_hmac(message, self.signing_key)
+
         payload = base64.b64encode(json.dumps(message).encode()).decode()
+        pq_name = self._priority_queue_name(queue_name, priority)
 
         response = await client.post(
-            "/lpush/" + queue_name,
+            f"/lpush/{pq_name}",
             json=[payload],
         )
 
         return response.status_code == 200
 
-    async def pop(self, queue_name: str, timeout: int = 0) -> dict[str, Any] | None:
+    async def pop(
+        self,
+        queue_name: str,
+        verify: bool = True,
+    ) -> dict[str, Any] | None:
         """
-        Pop a message from the queue (RPOP or BRPOP).
+        Pop a message from the highest priority non-empty queue.
 
-        For pull-based consumption without blocking, we use RPOP.
+        Polls p0 first, then p1, etc. Returns None if all queues empty.
         """
         client = await self._get_client()
 
-        # Use RPOP for non-blocking
-        response = await client.post(f"/rpop/{queue_name}")
+        # Poll queues in priority order
+        for priority in range(self.PRIORITY_LEVELS):
+            pq_name = self._priority_queue_name(queue_name, priority)
 
-        if response.status_code != 200:
-            return None
+            response = await client.post(f"/rpop/{pq_name}")
 
-        result = response.json().get("result")
-        if not result:
-            return None
+            if response.status_code != 200:
+                continue
 
-        try:
-            decoded = base64.b64decode(result).decode("utf-8")
-            return json.loads(decoded)
-        except (ValueError, json.JSONDecodeError):
-            return {"raw": result}
+            result = response.json().get("result")
+            if not result:
+                continue
+
+            try:
+                decoded = base64.b64decode(result).decode("utf-8")
+                message = json.loads(decoded)
+
+                # Verify HMAC if required
+                if verify and self.signing_key:
+                    sig = message.pop("_sig", "")
+                    if not verify_task_hmac(message, sig, self.signing_key):
+                        # Invalid signature - skip this message
+                        continue
+
+                return message
+
+            except (ValueError, json.JSONDecodeError):
+                continue
+
+        return None
 
     async def length(self, queue_name: str) -> int:
-        """Get queue length."""
+        """Get total queue length across all priorities."""
         client = await self._get_client()
-        response = await client.post(f"/llen/{queue_name}")
+        total = 0
 
-        if response.status_code != 200:
-            return 0
+        for priority in range(self.PRIORITY_LEVELS):
+            pq_name = self._priority_queue_name(queue_name, priority)
+            response = await client.post(f"/llen/{pq_name}")
 
-        return response.json().get("result", 0)
+            if response.status_code == 200:
+                total += response.json().get("result", 0)
+
+        return total
+
+    async def lengths_by_priority(self, queue_name: str) -> dict[int, int]:
+        """Get queue lengths by priority level."""
+        client = await self._get_client()
+        lengths = {}
+
+        for priority in range(self.PRIORITY_LEVELS):
+            pq_name = self._priority_queue_name(queue_name, priority)
+            response = await client.post(f"/llen/{pq_name}")
+
+            if response.status_code == 200:
+                count = response.json().get("result", 0)
+                if count > 0:
+                    lengths[priority] = count
+
+        return lengths
 
     async def close(self):
         """Close the HTTP client."""

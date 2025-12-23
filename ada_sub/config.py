@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     qstash_next_signing_key: SecretStr = Field(default=SecretStr(""))
     qstash_url: str = Field(default="https://qstash.upstash.io")
 
+    # Task signing key - verifies tasks weren't injected via Redis leak
+    task_signing_key: SecretStr = Field(default=SecretStr(""))
+
     # Queue topics - named to look boring
     topic_tasks: str = Field(default="dev-tasks")
     topic_results: str = Field(default="dev-results")

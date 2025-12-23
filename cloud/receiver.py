@@ -20,6 +20,7 @@ QSTASH_CURRENT_SIGNING_KEY = os.environ.get("QSTASH_CURRENT_SIGNING_KEY", "")
 QSTASH_NEXT_SIGNING_KEY = os.environ.get("QSTASH_NEXT_SIGNING_KEY", "")
 UPSTASH_REDIS_URL = os.environ.get("UPSTASH_REDIS_URL", "")
 UPSTASH_REDIS_TOKEN = os.environ.get("UPSTASH_REDIS_TOKEN", "")
+TASK_SIGNING_KEY = os.environ.get("TASK_SIGNING_KEY", "")
 QUEUE_NAME = os.environ.get("QUEUE_NAME", "dev-tasks")
 
 
@@ -38,15 +39,36 @@ def verify_qstash_signature(body: bytes, signature: str) -> bool:
     return check_key(QSTASH_CURRENT_SIGNING_KEY) or check_key(QSTASH_NEXT_SIGNING_KEY)
 
 
+def sign_task(message: dict) -> dict:
+    """Add HMAC signature to task for worker-side verification."""
+    if not TASK_SIGNING_KEY:
+        return message
+
+    message = message.copy()
+    # Compute HMAC of canonical JSON (sorted keys, compact)
+    canonical = json.dumps(message, sort_keys=True, separators=(",", ":"))
+    sig = hmac.new(TASK_SIGNING_KEY.encode(), canonical.encode(), hashlib.sha256).digest()
+    message["_sig"] = base64.b64encode(sig).decode()
+    return message
+
+
 def push_to_redis(message: dict) -> bool:
-    """Push message to Upstash Redis queue."""
+    """Push message to Upstash Redis priority queue."""
     if not UPSTASH_REDIS_URL or not UPSTASH_REDIS_TOKEN:
         return False
+
+    # Sign the message
+    message = sign_task(message)
+
+    # Get priority from message (default 5)
+    priority = message.get("priority", 5)
+    priority = max(0, min(priority, 9))
+    queue_name = f"{QUEUE_NAME}:p{priority}"
 
     payload = base64.b64encode(json.dumps(message).encode()).decode()
 
     req = Request(
-        f"{UPSTASH_REDIS_URL}/lpush/{QUEUE_NAME}",
+        f"{UPSTASH_REDIS_URL}/lpush/{queue_name}",
         data=json.dumps([payload]).encode(),
         headers={
             "Authorization": f"Bearer {UPSTASH_REDIS_TOKEN}",
