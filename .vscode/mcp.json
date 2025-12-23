@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "ada-sub": {
+      "command": "python",
+      "args": ["-m", "ada_sub.mcp_server"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "UPSTASH_REDIS_URL": "${env:UPSTASH_REDIS_URL}",
+        "UPSTASH_REDIS_TOKEN": "${env:UPSTASH_REDIS_TOKEN}"
+      }
+    }
+  }
+}
