@@ -5,6 +5,7 @@ No suspicious naming, no obvious AI/voice references in logs.
 """
 
 import asyncio
+import json
 import signal
 import sys
 from typing import NoReturn
@@ -136,6 +137,20 @@ class Worker:
 
                     # Process task
                     result = await self.process_task(task)
+
+                    # Store result for facade retrieval (TTS jobs)
+                    if task.task_type == TaskType.TRANSFORM and self.queue:
+                        result_data = json.dumps({
+                            "status": "completed" if result.status == TaskStatus.COMPLETED else "failed",
+                            "output_path": result.output_path,
+                            "duration_ms": result.duration_ms,
+                            "error": result.error_message
+                        })
+                        await self.queue.set(
+                            f"ada:tts:result:{task.job_id}",
+                            result_data,
+                            ex=7200  # 2 hours
+                        )
 
                     # Optionally post result back to results queue
                     if self.queue:
