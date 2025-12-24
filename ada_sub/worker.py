@@ -48,9 +48,9 @@ class Worker:
         self._running = False
         self._semaphore = asyncio.Semaphore(settings.max_concurrent_jobs)
 
-    async def setup(self, redis_url: str, redis_token: str):
+    async def setup(self, redis_url: str, redis_token: str, signing_key: str = ""):
         """Initialize connections."""
-        self.queue = RedisQueue(redis_url, redis_token)
+        self.queue = RedisQueue(redis_url, redis_token, signing_key)
         logger.info("worker_initialized", queue="redis")
 
     async def shutdown(self):
@@ -58,6 +58,7 @@ class Worker:
         self._running = False
         if self.queue:
             await self.queue.close()
+        await self.subprocess_executor.close()
         await self.lmstudio_executor.close()
         logger.info("worker_shutdown")
 
@@ -176,6 +177,7 @@ def main():
     # Get Redis credentials from env
     redis_url = os.environ.get("UPSTASH_REDIS_URL", "")
     redis_token = os.environ.get("UPSTASH_REDIS_TOKEN", "")
+    signing_key = settings.task_signing_key.get_secret_value()
 
     if not redis_url or not redis_token:
         print("Error: UPSTASH_REDIS_URL and UPSTASH_REDIS_TOKEN required")
@@ -184,7 +186,7 @@ def main():
     worker = Worker(settings)
 
     async def run():
-        await worker.setup(redis_url, redis_token)
+        await worker.setup(redis_url, redis_token, signing_key)
 
         # Handle shutdown signals
         loop = asyncio.get_event_loop()

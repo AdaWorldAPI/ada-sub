@@ -110,9 +110,9 @@ class TaskResult(BaseModel):
     status: TaskStatus
     created_at: int = Field(default_factory=lambda: int(time.time() * 1000))
 
-    # Output location or data
-    output_path: str | None = Field(default=None)
-    output_data: str | None = Field(default=None)
+    # Output location or data - neutral naming
+    artifact_path: str | None = Field(default=None)
+    artifact_data: str | None = Field(default=None)
 
     # Execution metrics (kept minimal to avoid logging sensitive info)
     duration_ms: int = Field(default=0)
@@ -125,14 +125,14 @@ class TaskResult(BaseModel):
     def success(
         cls,
         job_id: str,
-        output_path: str | None = None,
+        artifact_path: str | None = None,
         duration_ms: int = 0,
     ) -> "TaskResult":
         """Create a success result."""
         return cls(
             job_id=job_id,
             status=TaskStatus.COMPLETED,
-            output_path=output_path,
+            artifact_path=artifact_path,
             duration_ms=duration_ms,
         )
 

@@ -60,9 +60,9 @@ class LMStudioExecutor(BaseExecutor):
             result = response.json()
             content = result["choices"][0]["message"]["content"]
 
-            # For generate tasks, store result in output_data
+            # For generate tasks, store result in artifact_data
             task_result = TaskResult.success(job_id=task.job_id)
-            task_result.output_data = content
+            task_result.artifact_data = content
             return task_result
 
         except httpx.ConnectError:
