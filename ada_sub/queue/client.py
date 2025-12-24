@@ -185,6 +185,23 @@ class RedisQueue:
 
         return response.json().get("result", 0)
 
+    async def set(self, key: str, value: str, ex: int = 3600) -> bool:
+        """Set a key with expiration (for storing results)."""
+        client = await self._get_client()
+        response = await client.post(
+            "/set/" + key,
+            json=[value, "EX", ex],
+        )
+        return response.status_code == 200
+
+    async def get(self, key: str) -> str | None:
+        """Get a key value."""
+        client = await self._get_client()
+        response = await client.post(f"/get/{key}")
+        if response.status_code != 200:
+            return None
+        return response.json().get("result")
+
     async def close(self):
         """Close the HTTP client."""
         if self._client:
